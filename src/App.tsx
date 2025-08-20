@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { ProfileProvider } from "./contexts/ProfileContext";
 import { APIProvider } from "./hooks/useApi";
 import { api } from "./lib/api";
 import Auth from "./pages/Auth";
@@ -11,6 +12,11 @@ import AppLayout from "./pages/App";
 import NotFound from "./pages/NotFound";
 import TenantAuth from "./pages/TenantAuth";
 import TenantApp from "./pages/TenantApp";
+import AgencySignUp from "./pages/AgencySignUp";
+import AgentJoin from "./pages/AgentJoin";
+import AgentWizard from "./pages/AgentWizard";
+import TenantJoin from "./pages/TenantJoin";
+import TeamInvites from "./pages/TeamInvites";
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/api/supabaseAdapter";
 
@@ -167,32 +173,60 @@ const App = () => (
   <QueryClientProvider client={queryClient}>
     <APIProvider value={api}>
       <AuthProvider>
-        <TooltipProvider>
-          <Toaster />
-          <Sonner />
-          <BrowserRouter>
-            <Routes>
-              <Route path="/auth" element={<Auth />} />
-              <Route path="/tenant/auth" element={<TenantAuth />} />
-              <Route path="/tenant/*" element={
-                <ProtectedRoute requiredRole="tenant">
-                  <TenantApp />
-                </ProtectedRoute>
-              } />
-              <Route path="/app/*" element={
-                <ProtectedRoute>
-                  <AppLayout />
-                </ProtectedRoute>
-              } />
-              <Route path="/" element={
-                <SmartRoute>
-                  <div />
-                </SmartRoute>
-              } />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </BrowserRouter>
-        </TooltipProvider>
+        <ProfileProvider>
+          <TooltipProvider>
+            <Toaster />
+            <Sonner />
+            <BrowserRouter>
+              <Routes>
+                {/* Public routes */}
+                <Route path="/auth" element={<Auth />} />
+                <Route path="/signup" element={<AgencySignUp />} />
+                <Route path="/join" element={<AgentJoin />} />
+                <Route path="/tenant-join" element={<TenantJoin />} />
+                <Route path="/tenant/auth" element={<TenantAuth />} />
+                
+                {/* Onboarding routes */}
+                <Route path="/onboarding" element={
+                  <ProtectedRoute>
+                    <AgentWizard />
+                  </ProtectedRoute>
+                } />
+                
+                {/* Team management routes */}
+                <Route path="/team" element={
+                  <ProtectedRoute requiredRole="owner">
+                    <TeamInvites />
+                  </ProtectedRoute>
+                } />
+                
+                {/* Tenant portal */}
+                <Route path="/tenant/*" element={
+                  <ProtectedRoute requiredRole="tenant">
+                    <TenantApp />
+                  </ProtectedRoute>
+                } />
+                
+                {/* Main app */}
+                <Route path="/app/*" element={
+                  <ProtectedRoute>
+                    <AppLayout />
+                  </ProtectedRoute>
+                } />
+                
+                {/* Smart root route */}
+                <Route path="/" element={
+                  <SmartRoute>
+                    <div />
+                  </SmartRoute>
+                } />
+                
+                {/* 404 */}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </BrowserRouter>
+          </TooltipProvider>
+        </ProfileProvider>
       </AuthProvider>
     </APIProvider>
   </QueryClientProvider>
