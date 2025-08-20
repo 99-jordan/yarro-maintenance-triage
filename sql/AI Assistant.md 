@@ -1,0 +1,389 @@
+# AI Troubleshooting Assistant (Tenant Chat + Smart Escalation)
+
+## Goals
+- Give tenants an in-thread assistant that diagnoses issues, proposes safe steps, and classifies category/severity.
+- If unresolved or unsafe, escalate to the assigned agent and keep the same ticket thread.
+- Auto-tag tickets by category and priority; optionally route to specialist via N8N.
+- Keep everything within existing Supabase auth, RLS, Realtime, and `tenant_messages`.
+
+---
+
+## Architecture Overview
+
+- UI: Add AI panel to `TicketThread` so the bot appears as another participant.
+- Orchestration: Supabase Edge Function `troubleshoot` calls GPT-5 with tools (function calling).
+- Storage:
+  - All messages (tenant/agent/bot) remain in `tenant_messages`.
+  - Add optional classification fields to `tenant_tickets`.
+- RAG (optional, Phase 2):
+  - `pgvector` embeddings of troubleshooting docs; retrieve top-K and feed to GPT-5.
+  - Editable knowledge in `docs/ai_kb/*.md` (sync to DB embeddings).
+
+---
+
+## Minimal DB Changes
+
+1) Upsert a service profile for the assistant (used as `sender_id` for bot messages):
+
+```sql
+-- 1) Ensure bot profile exists (role can be 'specialist' to avoid new enum)
+insert into public.profiles (id, agency_id, full_name, role, is_active, created_at, updated_at)
+values (
+  '00000000-0000-0000-0000-00000000b0t1',               -- fixed UUID for bot
+  (select id from public.agencies limit 1),             -- any valid agency
+  'Troubleshooter Bot',
+  'specialist',                                         -- existing enum value
+  true, now(), now()
+)
+on conflict (id) do update set is_active = true, updated_at = now();
+```
+
+2) Allow the bot to post and read messages (reuse existing RLS allowing participants and staff; nothing to change if policies permit any authenticated profile in same agency to read/write messages on the ticket). If you need a targeted policy, add:
+
+```sql
+-- Grant bot read/write to messages of tenant tickets (scoped by agency)
+-- Only if you see RLS blocks; otherwise keep existing policies.
+-- Example (adjust to your current policy set or skip if already covered):
+-- insert policy variants if required for sender_id = bot id in tenant_messages.
+```
+
+3) Optional: add classification fields to tickets
+
+```sql
+alter table public.tenant_tickets
+  add column if not exists auto_category text,           -- 'plumbing' | 'electrical' | ...
+  add column if not exists auto_severity text,           -- 'low' | 'normal' | 'high' | 'urgent'
+  add column if not exists auto_notes text;
+
+-- keep your existing severity; auto_ fields are assistant-computed
+```
+
+---
+
+## Edge Function (Supabase) – `troubleshoot`
+
+Create `supabase/functions/troubleshoot/index.ts`:
+
+```ts
+// supabase/functions/troubleshoot/index.ts
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import OpenAI from 'https://esm.sh/openai@4.52.0'
+
+type ToolResult =
+  | { type: 'escalate'; reason: string }
+  | { type: 'classify'; category: string; severity: 'low'|'normal'|'high'|'urgent'; summary: string }
+  | { type: 'request_photos'; prompt: string }
+
+const SYSTEM = `
+You are a property maintenance triage assistant. Goals:
+- Diagnose tenant-reported issues safely (no risky instructions).
+- Clarify symptoms concisely. Offer practical, safe steps only.
+- Classify issue (category + severity). Provide a 1–2 sentence summary.
+- If unsafe or unresolved, call the escalate tool with a clear reason for the agent.
+- Be concise; ask 1 clear question at a time when probing.
+`
+
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'classify_issue',
+      description: 'Classify the issue and severity; include one-line summary',
+      parameters: {
+        type: 'object',
+        properties: {
+          category: { type: 'string', enum: ['plumbing','electrical','heating','appliance','structure','pest','general'] },
+          severity: { type: 'string', enum: ['low','normal','high','urgent'] },
+          summary: { type: 'string' }
+        },
+        required: ['category','severity','summary']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'request_photos',
+      description: 'Ask tenant for specific photos/video to diagnose',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string' }
+        },
+        required: ['prompt']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'escalate_to_agent',
+      description: 'Escalate to the assigned agent when unsafe/unresolved',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string' }
+        },
+        required: ['reason']
+      }
+    }
+  }
+] as const
+
+Deno.serve(async (req) => {
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_ANON_KEY')!, // Edge func can also use SERVICE_ROLE if needed
+    { global: { fetch } }
+  )
+  const openai = new OpenAI({ apiKey: Deno.env.get('OPENAI_API_KEY')! })
+
+  try {
+    const { ticketId, messageText, tenantId } = await req.json()
+
+    // Fetch context: last 20 messages in thread
+    const { data: msgs } = await supabase
+      .from('tenant_messages')
+      .select('sender_id, body, created_at')
+      .eq('ticket_id', ticketId)
+      .order('created_at', { ascending: true })
+      .limit(20)
+
+    const history = (msgs ?? []).map(m => ({
+      role: m.sender_id === '00000000-0000-0000-0000-00000000b0t1' ? 'assistant' :
+            (m.sender_id === tenantId ? 'user' : 'system'),
+      content: m.body
+    }))
+
+    const chat = await openai.chat.completions.create({
+      model: 'gpt-5.1-mini', // or your org’s approved GPT-5 model
+      messages: [
+        { role: 'system', content: SYSTEM },
+        ...history,
+        { role: 'user', content: messageText }
+      ],
+      tools,
+      tool_choice: 'auto',
+      temperature: 0.3
+    })
+
+    const choice = chat.choices[0]
+    const toolCall = choice?.message?.tool_calls?.[0]
+
+    // default assistant reply
+    let assistantReply = choice.message?.content ?? 'Let me think…'
+
+    let toolResult: ToolResult | null = null
+    if (toolCall?.function?.name === 'classify_issue') {
+      const args = JSON.parse(toolCall.function.arguments)
+      toolResult = { type: 'classify', ...args }
+      // store classification onto ticket
+      await supabase
+        .from('tenant_tickets')
+        .update({
+          auto_category: args.category,
+          auto_severity: args.severity,
+          auto_notes: args.summary
+        })
+        .eq('id', ticketId)
+    } else if (toolCall?.function?.name === 'request_photos') {
+      const args = JSON.parse(toolCall.function.arguments)
+      toolResult = { type: 'request_photos', prompt: args.prompt }
+      assistantReply = args.prompt
+    } else if (toolCall?.function?.name === 'escalate_to_agent') {
+      const args = JSON.parse(toolCall.function.arguments)
+      toolResult = { type: 'escalate', reason: args.reason }
+      // Create a bot note + set status in_progress
+      await supabase
+        .from('tenant_tickets')
+        .update({ status: 'in_progress' })
+        .eq('id', ticketId)
+
+      // Optionally notify via N8N webhook here
+      // await fetch(Deno.env.get('N8N_ESCALATE_URL')!, { method: 'POST', body: JSON.stringify({ ticketId, reason: args.reason }) })
+    }
+
+    // Store assistant message in thread
+    await supabase.from('tenant_messages').insert([{
+      id: crypto.randomUUID(),
+      ticket_id: ticketId,
+      agency_id: (await supabase.from('tenant_tickets').select('agency_id').eq('id', ticketId).single()).data?.agency_id,
+      sender_id: '00000000-0000-0000-0000-00000000b0t1',
+      body: assistantReply
+    }])
+
+    return new Response(JSON.stringify({ ok: true, toolResult }), { headers: { 'content-type': 'application/json' } })
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, error: String(e) }), { status: 500 })
+  }
+})
+```
+
+Environment variables (Edge Function):
+- `OPENAI_API_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY` (or `SERVICE_ROLE_KEY` if you prefer server-side writes across RLS)
+
+Deploy:
+```bash
+supabase functions deploy troubleshoot
+```
+
+---
+
+## Frontend Additions
+
+1) Add an AI panel to `TicketThread` (button + compose box). The assistant posts back into the same thread.
+
+```tsx
+// src/components/AIHelpPanel.tsx
+import { useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { useToast } from '@/hooks/use-toast'
+
+export default function AIHelpPanel({ ticketId, tenantId, onNewMessage }:{
+  ticketId: string; tenantId: string; onNewMessage: () => void
+}) {
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const { toast } = useToast()
+
+  const ask = async () => {
+    if (!text.trim()) return
+    setSending(true)
+    try {
+      const res = await fetch('/functions/v1/troubleshoot', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticketId, tenantId, messageText: text.trim() })
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.error || 'Assistant error')
+      setText('')
+      onNewMessage()
+    } catch (e:any) {
+      toast({ title: 'Assistant error', description: e.message, variant: 'destructive' })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="border rounded-md p-3 space-y-2">
+      <div className="text-sm font-medium">AI Troubleshooter</div>
+      <div className="flex gap-2">
+        <Input placeholder="Describe your issue or ask a question…" value={text} onChange={e=>setText(e.target.value)} />
+        <Button onClick={ask} disabled={sending || !text.trim()}>{sending ? 'Thinking…' : 'Ask'}</Button>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        The assistant provides safe guidance. Urgent/safety-critical issues are escalated to your agent.
+      </div>
+    </div>
+  )
+}
+```
+
+Integrate it in `TicketThread.tsx`:
+
+```tsx
+// inside the right-hand panel (below messages)
+<AIHelpPanel
+  ticketId={ticket.id}
+  tenantId={ticket.tenantId}
+  onNewMessage={loadMessages}
+/>
+```
+
+2) Optional: show auto classification chips on the ticket card:
+
+```tsx
+// where tickets are rendered (TenantBoard)
+{ticket.auto_category && <Badge variant="outline">{ticket.auto_category}</Badge>}
+{ticket.auto_severity && <Badge className={getSeverityColor(ticket.auto_severity)}>{ticket.auto_severity}</Badge>}
+```
+
+---
+
+## Prompts and Behaviors
+
+System (already in function):
+- Safety first; concise; 1 question at a time when probing.
+- Classify and summarize every issue.
+- Escalate when unsafe or unresolved (water leak near electricity, gas smell, no heat in winter, etc.).
+
+Recommended tool usage patterns:
+- `classify_issue` on first/second response
+- `request_photos` when visual inspection is helpful
+- `escalate_to_agent` if risk/high severity, repeated failure, or tenant unable to perform steps
+
+---
+
+## RAG (Phase 2, optional)
+
+1) Enable `pgvector`:
+```sql
+create extension if not exists vector;
+```
+
+2) Docs + embeddings:
+```sql
+create table if not exists public.troubleshooting_docs (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  markdown text not null,
+  embedding vector(1536),
+  created_at timestamptz default now()
+);
+
+-- store OpenAI embeddings (text-embedding-3-large) and query:
+-- select id, title, 1 - (embedding <#> query_embedding) as similarity ...
+```
+
+3) Loader script (node) to embed `docs/ai_kb/*.md` and upsert into DB.
+
+4) In the Edge Function, before calling chat, retrieve top-K chunks by cosine similarity and pass them as system/context messages.
+
+---
+
+## Escalation + Routing
+
+- When `escalate_to_agent` is invoked:
+  - Ticket `status` -> `in_progress`
+  - Insert bot message describing why escalation occurred and what’s next
+  - Optionally POST payload to N8N webhook:
+    - `{ ticketId, tenantId, agentId, category, severity, reason }`
+  - Agents see it immediately in unified feed (already implemented)
+
+---
+
+## Configuration
+
+- `.env` (frontend dev):
+  - `VITE_SUPABASE_URL`
+  - `VITE_SUPABASE_ANON_KEY`
+
+- Supabase Edge Function secrets:
+  - `OPENAI_API_KEY`
+  - `SUPABASE_URL`
+  - `SUPABASE_ANON_KEY` (or `SERVICE_ROLE_KEY` if you need cross-RLS writes)
+
+---
+
+## Rollout Plan
+
+1) Run bot profile upsert SQL.
+2) Deploy edge function `troubleshoot`.
+3) Add `AIHelpPanel` to `TicketThread`.
+4) Verify bot messages post and appear to tenant and agent.
+5) Optional: add classification fields to ticket list UI.
+6) Phase 2: RAG with `pgvector` and knowledge docs.
+
+---
+
+## Notes
+
+- No new user_role needed (bot uses existing `specialist`).
+- All messages remain in `tenant_messages`, so Realtime stays intact.
+- If RLS blocks bot, add a targeted policy for the bot profile ID.
