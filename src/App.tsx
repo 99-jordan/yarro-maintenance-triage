@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom"; // HashRouter prevents deep-link 404s on static hosting
+import { HashRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom"; // HashRouter prevents deep-link 404s on static hosting
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { ProfileProvider } from "./contexts/ProfileContext";
 import { APIProvider } from "./hooks/useApi";
@@ -105,14 +105,14 @@ const ProtectedRoute = ({ children, requiredRole }: {
 const SmartRoute = ({ children }: { children: React.ReactNode }) => {
   const { session, loading } = useAuth();
   const [checking, setChecking] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const checkRoleAndRedirect = async () => {
       if (loading) return;
       
       if (!session) {
-        // No session, redirect to main auth page
-        window.location.href = '/auth';
+        navigate('/auth', { replace: true });
         return;
       }
       
@@ -121,22 +121,22 @@ const SmartRoute = ({ children }: { children: React.ReactNode }) => {
         const userRole = profile?.role;
         // Primary path: use profile role when available
         if (userRole === 'tenant') {
-          if (window.location.pathname !== '/tenant') window.location.replace('/tenant');
+          navigate('/tenant', { replace: true });
           return;
         }
         if (userRole === 'agent' || userRole === 'owner') {
-          if (window.location.pathname !== '/app') window.location.replace('/app');
+          navigate('/app', { replace: true });
           return;
         }
         // Fallback path: infer by email domain without touching RLS-protected tables
         const { data: { user } } = await supabase.auth.getUser();
         const email = user?.email || '';
         if (email.endsWith('@tenant.com')) {
-          if (window.location.pathname !== '/tenant') window.location.replace('/tenant');
+          navigate('/tenant', { replace: true });
           return;
         }
         // Default to staff app if non-tenant or unknown
-        if (window.location.pathname !== '/app') window.location.replace('/app');
+        navigate('/app', { replace: true });
         return;
       } catch (error) {
         console.error('Error checking profile:', error);
@@ -144,10 +144,10 @@ const SmartRoute = ({ children }: { children: React.ReactNode }) => {
         const { data: { user } } = await supabase.auth.getUser();
         const email = user?.email || '';
         if (email.endsWith('@tenant.com')) {
-          if (window.location.pathname !== '/tenant') window.location.replace('/tenant');
+          navigate('/tenant', { replace: true });
           return;
         }
-        if (window.location.pathname !== '/auth') window.location.replace('/auth');
+        navigate('/auth', { replace: true });
       } finally {
         setChecking(false);
       }
