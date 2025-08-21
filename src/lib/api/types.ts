@@ -279,7 +279,7 @@ export interface YarrowAPI {
 
   // Landlords / Properties
   listLandlords(search?: string): Promise<Landlord[]>;
-  listProperties(landlordId: string): Promise<Property[]>;
+  listProperties(landlordId?: string): Promise<Property[]>;
 
   // Updates
   createUpdate(input: CreateUpdateInput, sendNow?: boolean): Promise<UpdateResult>;

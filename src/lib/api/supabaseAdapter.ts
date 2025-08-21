@@ -263,7 +263,7 @@ export const supabaseAdapter: YarrowAPI = {
     }
   },
 
-  async listProperties(landlordId: string): Promise<Property[]> {
+  async listProperties(landlordId?: string): Promise<Property[]> {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -281,12 +281,17 @@ export const supabaseAdapter: YarrowAPI = {
         throw new Error('User profile not found or no agency assigned');
       }
 
-      const { data, error } = await supabase
+      let query = supabase
         .from('properties')
         .select('*')
-        .eq('landlord_id', landlordId)
         .eq('agency_id', profile.agency_id)
         .order('address_line1');
+
+      if (landlordId) {
+        query = query.eq('landlord_id', landlordId);
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         throw new Error(`Failed to fetch properties: ${error.message}`);

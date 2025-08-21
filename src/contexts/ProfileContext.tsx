@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { Profile, Agency } from '@/lib/api/types';
 import { useAuth } from './AuthContext';
 import { useApi } from '@/hooks/useApi';
+import { supabase } from '@/lib/api/supabaseAdapter';
 
 interface ProfileContextType {
   profile: Profile | null;
@@ -37,15 +38,40 @@ export const ProfileProvider = ({ children }: { children: ReactNode }) => {
       // Fetch agency data if profile exists
       if (profileData?.agencyId) {
         try {
-          // Use RPC to get agency details
-          const { data: agencyData, error } = await (api as any).supabase
+          // Prefer RPC if available; otherwise fallback to direct table query
+          const { data: rpcData, error: rpcError } = await supabase
             .rpc('get_user_agency')
             .single();
-            
-          if (error) {
-            console.error('Error fetching agency:', error);
-          } else {
-            setAgency(agencyData);
+
+          if (rpcError) {
+            // Fallback: query agencies table by ID from profile
+            const { data: agencyRow, error: agencyError } = await supabase
+              .from('agencies')
+              .select('*')
+              .eq('id', profileData.agencyId)
+              .single();
+
+            if (agencyError) {
+              console.error('Error fetching agency:', agencyError);
+            } else {
+              setAgency({
+                id: agencyRow.id,
+                name: agencyRow.name,
+                slug: agencyRow.slug,
+                settings: agencyRow.settings,
+                createdAt: agencyRow.created_at,
+                updatedAt: agencyRow.updated_at,
+              });
+            }
+          } else if (rpcData) {
+            setAgency({
+              id: rpcData.id,
+              name: rpcData.name,
+              slug: rpcData.slug,
+              settings: rpcData.settings,
+              createdAt: rpcData.created_at,
+              updatedAt: rpcData.updated_at,
+            });
           }
         } catch (err) {
           console.error('Error fetching agency:', err);

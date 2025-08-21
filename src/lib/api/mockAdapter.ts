@@ -153,10 +153,10 @@ export const mockAdapter: YarrowAPI = {
     return mockLandlords;
   },
 
-  async listProperties(landlordId: string): Promise<Property[]> {
+  async listProperties(landlordId?: string): Promise<Property[]> {
     await delay();
     console.log('Mock: List properties', { landlordId });
-    return mockProperties.filter(p => p.landlordId === landlordId);
+    return landlordId ? mockProperties.filter(p => p.landlordId === landlordId) : mockProperties;
   },
 
   async createUpdate(input: CreateUpdateInput, sendNow?: boolean): Promise<UpdateResult> {
