@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom"; // HashRouter prevents deep-link 404s on static hosting
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { ProfileProvider } from "./contexts/ProfileContext";
 import { APIProvider } from "./hooks/useApi";
@@ -16,6 +16,7 @@ import AgencySignUp from "./pages/AgencySignUp";
 import AgentJoin from "./pages/AgentJoin";
 import AgentWizard from "./pages/AgentWizard";
 import TenantJoin from "./pages/TenantJoin";
+import AgencySettings from "./pages/AgencySettings";
 import TeamInvites from "./pages/TeamInvites";
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/api/supabaseAdapter";
@@ -177,7 +178,7 @@ const App = () => (
           <TooltipProvider>
             <Toaster />
             <Sonner />
-            <BrowserRouter>
+            <HashRouter>
               <Routes>
                 {/* Public routes */}
                 <Route path="/auth" element={<Auth />} />
@@ -190,6 +191,11 @@ const App = () => (
                 <Route path="/onboarding" element={
                   <ProtectedRoute>
                     <AgentWizard />
+                  </ProtectedRoute>
+                } />
+                <Route path="/settings" element={
+                  <ProtectedRoute requiredRole="owner">
+                    <AgencySettings />
                   </ProtectedRoute>
                 } />
                 
@@ -224,7 +230,7 @@ const App = () => (
                 {/* 404 */}
                 <Route path="*" element={<NotFound />} />
               </Routes>
-            </BrowserRouter>
+            </HashRouter>
           </TooltipProvider>
         </ProfileProvider>
       </AuthProvider>

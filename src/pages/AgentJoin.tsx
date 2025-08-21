@@ -127,6 +127,7 @@ const AgentJoin = () => {
               <p className="text-gray-600">
                 Your account has been created successfully. You'll be redirected to complete your profile setup.
               </p>
+              <Button onClick={() => navigate('/onboarding')} className="mt-2">Go to Onboarding now</Button>
             </div>
           </CardContent>
         </Card>
