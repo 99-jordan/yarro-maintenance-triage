@@ -898,11 +898,18 @@ export const supabaseAdapter: YarrowAPI = {
   async sendEmail(to: string, subject: string, htmlBody: string, textBody?: string): Promise<EmailSendResult> {
     try {
       const mailerSendApiKey = import.meta.env.VITE_MAILERSEND_API_KEY;
-      const fromEmail = import.meta.env.VITE_MAILERSEND_FROM_EMAIL || 'jordanyussuf@gmail.com';
-      const fromName = import.meta.env.VITE_MAILERSEND_FROM_NAME || 'Jordan Yussuf';
+      const fromEmail =
+        import.meta.env.VITE_MAILERSEND_FROM_EMAIL || 'jordanyussuf@gmail.com';
+      const fromName =
+        import.meta.env.VITE_MAILERSEND_FROM_NAME || 'Jordan Yussuf';
 
       if (!mailerSendApiKey) {
-        throw new Error('MailerSend API key not configured');
+        console.warn('MailerSend API key not configured');
+        return {
+          success: false,
+          error: 'MailerSend API key not configured',
+          recipientCount: 0,
+        };
       }
 
       console.log('Email details:', {

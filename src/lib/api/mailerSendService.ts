@@ -12,9 +12,12 @@ const mailerSendApiKey = import.meta.env.VITE_MAILERSEND_API_KEY;
 const mailerSendFromEmail = import.meta.env.VITE_MAILERSEND_FROM_EMAIL || 'noreply@youragency.com';
 const mailerSendFromName = import.meta.env.VITE_MAILERSEND_FROM_NAME || 'Your Agency';
 
-if (!mailerSendApiKey) {
-  throw new Error('Missing MailerSend API key');
-}
+// Previously this module would throw during import when the API key wasn't
+// configured. This caused the entire application to fail to start in
+// environments (like Vercel) where MailerSend isn't configured. Instead we
+// now allow the service to be created without a key and handle the missing
+// configuration when an email operation is attempted. This lets the rest of
+// the app run even if the MailerSend integration is not set up.
 
 export class MailerSendService {
   private static instance: MailerSendService;
@@ -34,11 +37,20 @@ export class MailerSendService {
 
   // Send email via MailerSend API
   async sendEmail(
-    to: string, 
-    subject: string, 
-    htmlBody: string, 
+    to: string,
+    subject: string,
+    htmlBody: string,
     textBody?: string
   ): Promise<EmailSendResult> {
+    if (!this.apiKey) {
+      console.warn('MailerSend API key not configured');
+      return {
+        success: false,
+        error: 'MailerSend API key not configured',
+        recipientCount: 0
+      };
+    }
+
     try {
       const request: MailerSendEmailRequest = {
         from: {
@@ -88,11 +100,20 @@ export class MailerSendService {
 
   // Send bulk emails via MailerSend API
   async sendBulkEmail(
-    recipients: string[], 
-    subject: string, 
-    htmlBody: string, 
+    recipients: string[],
+    subject: string,
+    htmlBody: string,
     textBody?: string
   ): Promise<EmailSendResult> {
+    if (!this.apiKey) {
+      console.warn('MailerSend API key not configured');
+      return {
+        success: false,
+        error: 'MailerSend API key not configured',
+        recipientCount: 0
+      };
+    }
+
     try {
       const request: MailerSendEmailRequest = {
         from: {
@@ -138,6 +159,15 @@ export class MailerSendService {
 
   // Send weekly summaries to all landlords
   async sendWeeklySummaries(weekStart?: string): Promise<EmailSendResult> {
+    if (!this.apiKey) {
+      console.warn('MailerSend API key not configured');
+      return {
+        success: false,
+        error: 'MailerSend API key not configured',
+        recipientCount: 0
+      };
+    }
+
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
